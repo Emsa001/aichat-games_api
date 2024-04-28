@@ -47,9 +47,9 @@ const announcement = (time, text, io, socket) => {
 const question = (io, socket, time) => {
     return new Promise(async (resolve, reject) => {
         try {
-            io.to(socket.roomId).emit("systemMessage", { time, type: "question", text: getQuestion(questions) });
             const game = await Games.findOne({ where: { roomId: socket.roomId } });
-            if(!game) return reject("Game not found");
+            if(!game) return resolve(false);
+            io.to(socket.roomId).emit("systemMessage", { time, type: "question", text: getQuestion(questions) });
             await game.update({ canWrite: true });
             setTimeout(async () => {
 
@@ -57,7 +57,20 @@ const question = (io, socket, time) => {
 
                 DidNotAnswer.forEach(async (user) => {
                     io.to(socket.roomId).emit("kick", { username: user.username });
+                    socket.leave(user.userId);
                 });
+                if(DidNotAnswer.length > 0){
+                    await Users.destroy({ where: { roomId: socket.roomId, answered: false } });
+                    
+                    const AllUsers = await Users.findAll({ where: { roomId: socket.roomId } });
+                    if (AllUsers.length === 0) {
+                        await Messages.destroy({ where: { roomId: socket.roomId } });
+                        await Games.destroy({ where: { roomId: socket.roomId } });
+                    }else{
+                        const chatUsernames = await Users.findAll({ where: { roomId:socket.roomId } });
+                        io.to(socket.roomId).emit("userList", { chatUsernames: chatUsernames.map((item) => item.username)});
+                    }
+                }
 
                 await game.update({ canWrite: false });
                 await Messages.destroy({ where: { roomId: socket.roomId, round: game.round } });
@@ -73,10 +86,10 @@ const question = (io, socket, time) => {
 const voteTime = (io, socket, time) => {
     return new Promise(async (resolve, reject) => {
         try {
+            const game = await Games.findOne({ where: { roomId: socket.roomId } });
+            if(!game) return resolve(false);
             io.to(socket.roomId).emit("start-vote", time);
             io.to(socket.roomId).emit("systemMessage", { text: "Voting has started", type:"info", color: "warning" });
-            const game = await Games.findOne({ where: { roomId: socket.roomId } });
-            if(!game) return reject("Game not found");
             await game.update({ canVote: true });
             setTimeout(async () => {
                 io.to(socket.roomId).emit("end-vote", time);
@@ -124,16 +137,18 @@ async function GuessAI(io, socket, gameData)
 {
     await announcement(10, "Game Starts in", io, socket);
 
-    let rnd = 1;
-    while(true){
-        const game = await Games.findOne({ where: { roomId: socket.roomId } });
-        const userCount = await Users.count({ where: { roomId: socket.roomId } });
-        if(!socket.roomId || !game || userCount == 0) break;
-        await round(io, socket, rnd);
-        rnd++;
-    }
+    setTimeout(async () => {
+        let rnd = 1;
+        while(true){
+            const game = await Games.findOne({ where: { roomId: socket.roomId } });
+            const userCount = await Users.count({ where: { roomId: socket.roomId } });
+            if(!socket.roomId || !game || userCount == 0) break;
+            await round(io, socket, rnd);
+            rnd++;
+        }
+        await announcement(5, "END");
+    }, 100);
 
-    await announcement(5, "END");
 }
 
 module.exports = { GuessAI };
