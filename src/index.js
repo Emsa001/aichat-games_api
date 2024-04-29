@@ -23,11 +23,11 @@ class GameManager {
         return this.games[gameId];
     }
 
-    createGame(gameName) {
+    async createGame(gameName) {
         const GameInstance = require(`./games/${gameName}`);
         const game = new GameInstance(this.io);
+        game.create();
         this.numGames++;
-
         this.games[game.id] = game;
 
         return game;
@@ -58,7 +58,7 @@ class GameManager {
         delete this.games[game.id];
         this.numGames--;
 
-        console.log(this.games);
+        // console.log(this.games);
     }
 
     getAllGames() {
@@ -94,13 +94,13 @@ io.on("connection", (socket) => {
 		update();
 	});
 
-	socket.on("createGame", (data) => {
+	socket.on("createGame", async (data) => {
 		if (gameManager.numGames >= 10) {
 			socket.emit("error", { text: "Maximum number of games reached" });
 			return;
 		}
 
-		const game = gameManager.createGame(data.name);
+		const game = await gameManager.createGame(data.name);
         update();
 
         const currentTime = new Date().getTime();
@@ -108,10 +108,7 @@ io.on("connection", (socket) => {
         if (timeUntilStart > 0) {
             setTimeout(async () => {
                 const gameStart = await game.start(gameManager);
-                console.log(gameStart)
-                if(gameStart.success != true){
-                    gameManager.deleteGame(gameStart);
-                }
+                gameManager.deleteGame(gameStart);
                 update();
             }, timeUntilStart);
         }

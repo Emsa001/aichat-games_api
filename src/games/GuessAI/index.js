@@ -1,12 +1,14 @@
 const { generateUsername } = require("unique-username-generator");
+const { generateAiResponse, initModel } = require("./ai");
+const { getRandomQuestion } = require("./questions");
 
 const generateId = () => {
     return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 };
 
 class Player {
-    constructor(socket) {
-        this.id = socket.id;
+    constructor(id) {
+        this.id = id;
         this.name = generateUsername("", 0, 10);
         this.isAI = false;
         this.isHuman = true;
@@ -27,6 +29,7 @@ class Game {
         // Game information
         this.io = io;
         this.id = generateId();
+        this.model = initModel();
         this.name = "Guess Who's AI";
         this.description =
             "Chat of minimum 3 players. One player is the AI, the others are humans. All players including AI will answer the same question. Humans must guess who the AI is. AI must try to blend in.";
@@ -34,8 +37,11 @@ class Game {
 
         // Player management
         this.players = [];
-        this.minPlayers = 2;
+        this.ai = [];
+        this.minPlayers = 3;
         this.maxPlayers = 10;
+        this.voteTime = 25;
+        this.roundTime = 30;
 
         // Game status
         this.status = "waiting";
@@ -45,7 +51,7 @@ class Game {
 
         // Game timing
         const futureDate = new Date();
-        const timeToStart = 10;
+        const timeToStart = 15;
         this.startTime = futureDate.setSeconds(futureDate.getSeconds() + timeToStart);
     }
 
@@ -94,11 +100,31 @@ class Game {
         this.io.to(this.id).emit("data", data);
     }
 
+    async create(){
+        this.addAI();
+        generateAiResponse(this.model, "write a single word: Hi").then((response) => {
+            console.log(`AI test response: ${response}`);
+        });
+    }
+
+    async generateAiMessage(ai, text) {
+        const message = await generateAiResponse(this.model, text);
+
+        const delay = Math.random() * (100 - 40) + 40;
+        setTimeout(() => {
+            this.sendMessage({ text: message, username: ai.name, type: "message", color: undefined });
+            ai.canWrite = false;
+        }, delay * 100);
+    }
+    
+
     recieveMessage(socket, text) {
-        if (!socket.player.canWrite) return { success: false, text: "Not your turn" };
-        socket.player.canWrite = false;
-        this.sendMessage({ text: text, username: socket.player.name, type: "message", color: undefined });
-        this.sendUserData(socket.player);
+        const player = this.getPlayer(socket.id);
+        if (!player || !player.canWrite) return { success: false, text: "Not your turn" };
+
+        player.canWrite = false;
+        this.sendMessage({ text: text, username: player.name, type: "message", color: undefined });
+        this.sendUserData(player);
         return { success: true };
     }
 
@@ -108,10 +134,20 @@ class Game {
         return { success: true };
     }
 
+    addAI() {
+        const AI = new Player(generateId());
+        AI.setAI();
+
+        this.players.push(AI);
+        this.ai.push(AI);
+        this.sendGameData({ game: true });
+        return { success: true };
+    }
+
     addPlayer(socket) {
         if (this.players.length >= this.maxPlayers) return { success: false, text: "Game Full" };
 
-        const player = new Player(socket);
+        const player = new Player(socket.id);
         if (this.players.includes(player)) return { success: false, text: "Already Joined" };
 
         this.players.push(player);
@@ -130,18 +166,20 @@ class Game {
     removePlayer(id) {
         const user = this.players.find((player) => player.id === id);
         this.players = this.players.filter((player) => player !== user);
+        if(user?.isAI)
+            this.ai = this.ai.filter((player) => player !== user);
 
         user.canWrite = false;
         this.io.to(user.id).emit("data", { user: user });
-        this.sendGameData({ game: true });
+        this.sendGameData({ game: true, players: true });
 
         return { success: true };
     }
 
-    async question({ time }) {
+    async question({ time, text }) {
         return new Promise(async (resolve) => {
             this.sendTimer(time);
-            this.sendMessage({ text: "Why is the sky blue?", type: "alert", color: undefined });
+            this.sendMessage({ text, type: "alert", color: undefined });
 
             this.players.forEach((player) => {
                 player.canWrite = true;
@@ -149,6 +187,11 @@ class Game {
             });
 
             this.sendGameData({ game: true });
+
+            this.ai.forEach(async (ai) => {
+                this.generateAiMessage(ai, text);
+            });
+
             setTimeout(() => {
                 resolve();
             }, time * 1000);
@@ -166,7 +209,7 @@ class Game {
                 }, 1000);
             });
 
-            this.question({ time }).then(() => {
+            this.question({ time, text: getRandomQuestion() }).then(() => {
                 this.players.forEach((player) => {
                     if (player.canWrite) {
                         this.sendMessage({ text: `${player.name} did not answer`, type: "info", color: "error" });
@@ -195,32 +238,52 @@ class Game {
             setTimeout(() => {
                 this.canVote = false;
 
-                const votes = this.players.map((player) => player.vote);
+                const votes = this.players.map((player) => player.vote).filter((vote) => vote !== null);
                 const highestVotes = votes
                     .sort((a, b) => votes.filter((v) => v === a).length -votes.filter((v) => v === b).length)
                     .pop();
 
-                console.log(votes, highestVotes);
-
-                if (!highestVotes) {
-                    this.sendMessage({ text: `Nobody was kicked`, type: "alert", color: "warning" });
-                    resolve();
-                }
-
-
                 const toKick = this.getPlayer(highestVotes);
 
-                console.log(toKick.name);
-                this.sendMessage({ text: `${toKick.name} was voted to be kicked`, type: "alert", color: "error" });
-                this.round++;
+                if (!highestVotes || !toKick) {
+                    this.sendMessage({ text: `Nobody was kicked`, type: "alert", color: "warning" });
+                    return resolve();
+                }
 
-                resolve();
+                this.sendMessage({ text: `${toKick.name} was voted to be kicked`, type: "alert", color: "error" });
+
+                if(toKick.isAI){
+                    return resolve({
+                        victory: true,
+                        gameId: this.id,
+                        title: "Victory!",
+                        message: "Congratulations! You've kicked the AI!",
+                        icon: "success",
+                    });
+                }
+
+                this.removePlayer(toKick.id);
+
+                if(this.players.length < this.minPlayers)
+                {
+                    const ai = this.players.find(player => player.isAI);
+                    return resolve( {
+                        victory: false,
+                        gameId: this.id,
+                        title: "You lost",
+                        message: `The AI has won (${ai?.name})!`,
+                        icon: "error",
+                    });
+                }
+
+                resolve({ success: true, text: "Player kicked"});
             }, time * 1000);
         });
     }
 
     async start() {
-        if (this.players.length < this.minPlayers)
+        if (this.players.length < this.minPlayers){
+            console.log("Not enough players")
             return {
                 success: false,
                 gameId: this.id,
@@ -228,6 +291,7 @@ class Game {
                 message: "This room has been closed",
                 icon: "error",
             };
+        }
 
         this.status = "started";
         this.canJoin = false;
@@ -235,20 +299,39 @@ class Game {
         this.sendGameData({ game: true, players: true });
         this.sendMessage({ text: "Game started", type: "alert", color: "info" });
 
-        // await this.newRound(10);
-        // await this.newRound(10);
-
         while (true) {
-            if (this.round == 0) {
-                const vote = await this.vote(10);
-            } else {
-                const round = await this.newRound(10);
-                if (round.success === false) break;
+
+            if(this.players.length < this.minPlayers)
+            {
+                const ai = this.players.find(player => player.isAI);
+                return resolve( {
+                    victory: false,
+                    gameId: this.id,
+                    title: "You lost",
+                    message: `The AI has won (${ai?.name})!`,
+                    icon: "error",
+                });
+            }
+
+            if (this.round > 0 && this.round % 3 === 0) {
+                const vote = await this.vote(this.voteTime);
+                if(vote.victory === true || vote.victory === false)
+                    return vote;
+            }
+            const round = await this.newRound(this.roundTime);
+            if (round.success === false) break;
+
+            if(this.ai.length == 0){
+                return {
+                    gameId: this.id,
+                    title: "Victory!",
+                    message: "Congratulations! You've kicked the AI!",
+                    icon: "success",
+                };
             }
         }
 
         return {
-            success: false,
             gameId: this.id,
             title: "Game finished",
             message: "This room has been closed",
@@ -256,8 +339,6 @@ class Game {
         };
 
         // this.sendMessage({ text: "Game finished", type: "alert", color: "info" });
-
-        return { success: true };
     }
 }
 
