@@ -2,7 +2,6 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-const { sequelize } = require("./database/connection");
 
 const { init: initSocket, getIO } = require("./utils/sockets");
 
@@ -13,22 +12,15 @@ app.use(bodyParser.json());
 const server = http.createServer(app);
 initSocket(server);
 
-// async function initGame(socket) {
-// 	const game = await Games.findOne({ where: { roomId: socket.roomId } });
-// 	switch(game.name){
-// 		case "guessAI":
-// 			GuessAI(io, socket, game);
-// 			break;
-// 		default:
-// 			console.log("game not found");
-// 	}
-// }
-
 class GameManager {
     constructor(io) {
         this.io = io;
         this.games = {};
         this.numGames = 0;
+    }
+
+    getGame(gameId) {
+        return this.games[gameId];
     }
 
     createGame(gameName) {
@@ -42,28 +34,31 @@ class GameManager {
     }
 
     joinGame(gameId, socket) {
-        const game = this.games[gameId];
+        const game = this.getGame(gameId);
 
         if (!game) throw new Error(`Game ${gameId} does not exist.`);
-
         game.addPlayer(socket);
 
         return game;
     }
 
-    getGame(gameId) {
-        return this.games[gameId];
-    }
 
     leaveGame(socket) {
-        const game = this.games[socket.gameId];
+        const game = this.getGame(socket.gameId);
         if (!game) return { success: false, text: "Game not found" };
-        return game.removePlayer(socket);
+        return game.removePlayer(socket.id);
     }
 
-    deleteGame(gameId) {
-        delete this.games[gameId];
+    deleteGame(data) {
+        const game = this.getGame(data.gameId);
+        if(!game) return;
+
+        this.io.to(game.id).emit("close", { title: data.title, message: data.message, icon: data.icon});
+
+        delete this.games[game.id];
         this.numGames--;
+
+        console.log(this.games);
     }
 
     getAllGames() {
@@ -111,10 +106,12 @@ io.on("connection", (socket) => {
         const currentTime = new Date().getTime();
         const timeUntilStart = game.startTime - currentTime;
         if (timeUntilStart > 0) {
-            setTimeout(() => {
-                const start = game.start();
-                if(start.success != true)
-                    gameManager.deleteGame(game.id);
+            setTimeout(async () => {
+                const gameStart = await game.start(gameManager);
+                console.log(gameStart)
+                if(gameStart.success != true){
+                    gameManager.deleteGame(gameStart);
+                }
                 update();
             }, timeUntilStart);
         }
@@ -144,15 +141,24 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on("test", (data) => {
+    socket.on("message", (data) => {
         try{
-            const game = gameManager.getGame(socket.gameId);
-            console.log(socket.gameId);
-            
-
+            const game = gameManager.getGame(data.gameId);
             if (!game) return;
+
     
-            game.recieveMessage(socket, data.text);
+            const response = game.recieveMessage(socket, data.text);
+        }catch(err){
+            console.error(err);
+        }
+    });
+
+    socket.on("vote", (data) => {
+        try{
+            const game = gameManager.getGame(data.gameId);
+            if (!game) return;
+
+            const response = game.recieveVote(socket, data.vote);
         }catch(err){
             console.error(err);
         }
@@ -176,105 +182,6 @@ io.on("connection", (socket) => {
 		console.log(socket.rooms); // the Set contains at least the socket ID
 	});
 });
-
-// io.on("connection", (socket) => {
-// socket.on("join", async (data) => {
-//     try {
-//         const { roomId, userId } = data;
-//         socket.join(roomId);
-//         socket.join(userId);
-
-//         socket.userId = userId;
-//         socket.roomId = roomId;
-
-//         const username = generateUsername();
-
-//         const user = { id: userId, username, admin: false };
-
-// 		let game = await Games.findOne({ where: { roomId } });
-
-//         if (!game) {
-//             user.admin = true;
-// 			game = await Games.create({ roomId, name:"guessAI", canWrite: true, round: 0 });
-//         }
-// 		console.log(userId);
-// 		await Users.create({ roomId, userId, username, admin: user.admin });
-//         io.to(userId).emit("user", user);
-
-// 		const chatUsernames = await Users.findAll({ where: { roomId } });
-//         setTimeout(() => {
-//             io.to(roomId).emit("userList", { chatUsernames: chatUsernames.map((item) => item.username)});
-//         }, 100);
-//     } catch (err) {
-//         console.error(err);
-//     }
-// });
-
-// socket.on("disconnect", async () => {
-//     try {
-//        	await kickUser(socket, socket.userId);
-// 		await updateUsers(socket);
-//     } catch (err) {
-//         console.error(err);
-//     }
-// });
-
-// socket.on("message", async (data) => {
-// 	try{
-// 		const { message, userId } = data;
-// 		const { roomId } = socket;
-
-// 		const game = await Games.findOne({ where: { roomId } });
-// 		if(game.canWrite === false) return;
-// 		const user = await Users.findOne({ where: { userId } });
-// 		const userMessage = await Messages.findOne({ where: { roomId, username: user.username, round: game.round } });
-// 		if(userMessage) return;
-
-// 		await Messages.create({ roomId, username: user.username, message, round: game.round});
-
-// 		user.answered = true;
-// 		io.to(roomId).emit("message", { username: user.username, message, type: "message" });
-// 		await user.save();
-// 	}catch(err){
-// 		console.error(err);
-// 	}
-// });
-
-// socket.on("vote", async (data) => {
-// 	try{
-// 		const { vote, userId } = data;
-// 		const { roomId } = socket;
-
-// 		console.log(vote, userId, roomId);
-
-// 		const game = await Games.findOne({ where: { roomId } });
-// 		if(game.canVote === false) return;
-
-// 		const user = await Users.findOne({ where: { userId } });
-// 		if(!user || user.voted) return;
-
-// 		const voteUser = await Users.findOne({ where: { username: vote } });
-// 		if(!voteUser) return;
-
-// 		voteUser.kickVotes += 1;
-// 		await voteUser.save();
-
-// 		user.voted = true;
-// 		await user.save();
-
-// 	}catch(err){
-// 		console.error(err);
-// 	}
-// });
-
-// socket.on("startGame", () => {
-// 	try{
-// 		initGame(socket);
-// 	}catch(err){
-// 		console.error(err);
-// 	}
-// })
-// });
 
 app.post("/checkRoom", async (req, res) => {
     // const { roomId } = req.body;

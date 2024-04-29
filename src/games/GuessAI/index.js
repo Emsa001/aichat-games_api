@@ -12,6 +12,8 @@ class Player {
         this.isHuman = true;
         this.admin = false;
         this.viewer = false;
+        this.canWrite = false;
+        this.vote = null;
     }
 
     setAI() {
@@ -32,17 +34,19 @@ class Game {
 
         // Player management
         this.players = [];
+        this.minPlayers = 2;
         this.maxPlayers = 10;
 
         // Game status
         this.status = "waiting";
         this.round = 0;
         this.canJoin = true;
-        this.canWrite = false;
+        this.canVote = false;
 
         // Game timing
         const futureDate = new Date();
-        this.startTime = futureDate.setSeconds(futureDate.getSeconds() + 5);
+        const timeToStart = 10;
+        this.startTime = futureDate.setSeconds(futureDate.getSeconds() + timeToStart);
     }
 
     formatData() {
@@ -51,21 +55,34 @@ class Game {
             name: this.name,
             description: this.description,
             color: this.color,
+
             players: this.players.length,
+            minPlayers: this.minPlayers,
             maxPlayers: this.maxPlayers,
-            canJoin: this.canJoin,
-            canWrite: this.canWrite,
+
             status: this.status,
+            round: this.round,
+            canJoin: this.canJoin,
+            canVote: this.canVote,
+
             startTime: this.startTime,
         };
     }
 
-    sendPlayerList() {
-        this.io.to(this.id).emit("playerlist", { players: this.players });
-    }
-
     sendMessage(data) {
         this.io.to(this.id).emit("message", data);
+    }
+
+    sendTimer(time) {
+        this.io.to(this.id).emit("timer", { time: time });
+    }
+
+    sendUserData(player) {
+        this.io.to(player.id).emit("data", { user: player });
+    }
+
+    getPlayer(id) {
+        return this.players.find((player) => player.id === id);
     }
 
     sendGameData({ game, players }) {
@@ -78,8 +95,16 @@ class Game {
     }
 
     recieveMessage(socket, text) {
-        if (!this.canWrite) return { success: false, text: "Not your turn" };
+        if (!socket.player.canWrite) return { success: false, text: "Not your turn" };
+        socket.player.canWrite = false;
         this.sendMessage({ text: text, username: socket.player.name, type: "message", color: undefined });
+        this.sendUserData(socket.player);
+        return { success: true };
+    }
+
+    recieveVote(socket, vote) {
+        if (!this.canVote) return { success: false, text: "Not voting time" };
+        socket.player.vote = vote;
         return { success: true };
     }
 
@@ -93,7 +118,7 @@ class Game {
 
         if (this.players.length == this.maxPlayers) this.canJoin = false;
 
-		socket.player = player;
+        socket.player = player;
         this.io.to(socket.id).emit("data", { user: player });
         setTimeout(() => {
             this.sendGameData({ game: true });
@@ -102,43 +127,135 @@ class Game {
         return { game: this, success: true };
     }
 
-    removePlayer(socket) {
-        const user = this.players.find((player) => player.id === socket.id);
+    removePlayer(id) {
+        const user = this.players.find((player) => player.id === id);
         this.players = this.players.filter((player) => player !== user);
 
+        user.canWrite = false;
+        this.io.to(user.id).emit("data", { user: user });
         this.sendGameData({ game: true });
-        console.log(`Player ${socket.id} left`);
-        console.log(this.players);
 
         return { success: true };
     }
 
-    question() {
-        return new Promise((resolve, reject) => {
+    async question({ time }) {
+        return new Promise(async (resolve) => {
+            this.sendTimer(time);
             this.sendMessage({ text: "Why is the sky blue?", type: "alert", color: undefined });
-            this.canWrite = true;
-			this.sendGameData({ game: true })
+
+            this.players.forEach((player) => {
+                player.canWrite = true;
+                this.sendUserData(player);
+            });
+
+            this.sendGameData({ game: true });
             setTimeout(() => {
-                this.canWrite = false;
-				this.sendGameData({ game: true })
                 resolve();
-            }, 10 * 1000);
+            }, time * 1000);
+        });
+    }
+
+    async newRound(time) {
+        return new Promise(async (resolve) => {
+            this.round++;
+            this.sendMessage({ text: `Round ${this.round} started`, type: "info", color: "info" });
+
+            await new Promise((resolve) => {
+                setTimeout(() => {
+                    resolve();
+                }, 1000);
+            });
+
+            this.question({ time }).then(() => {
+                this.players.forEach((player) => {
+                    if (player.canWrite) {
+                        this.sendMessage({ text: `${player.name} did not answer`, type: "info", color: "error" });
+                        this.removePlayer(player.id);
+                        this.sendGameData({ game: true, players: true });
+                    }
+                });
+
+                if (this.players.length < this.minPlayers) {
+                    return resolve({ success: false, text: "Not enough players" });
+                }
+
+                resolve({ success: true, text: "Round finished" });
+            });
+        });
+    }
+
+    async vote(time) {
+        return new Promise(async (resolve) => {
+            this.canVote = true;
+
+            this.sendTimer(time);
+            this.sendMessage({ text: `Vote time`, type: "alert", color: "info" });
+            this.sendGameData({ game: true });
+
+            setTimeout(() => {
+                this.canVote = false;
+
+                const votes = this.players.map((player) => player.vote);
+                const highestVotes = votes
+                    .sort((a, b) => votes.filter((v) => v === a).length -votes.filter((v) => v === b).length)
+                    .pop();
+
+                console.log(votes, highestVotes);
+
+                if (!highestVotes) {
+                    this.sendMessage({ text: `Nobody was kicked`, type: "alert", color: "warning" });
+                    resolve();
+                }
+
+
+                const toKick = this.getPlayer(highestVotes);
+
+                console.log(toKick.name);
+                this.sendMessage({ text: `${toKick.name} was voted to be kicked`, type: "alert", color: "error" });
+                this.round++;
+
+                resolve();
+            }, time * 1000);
         });
     }
 
     async start() {
-        if (this.players.length < 2) return { success: false, text: "Not enough players" };
+        if (this.players.length < this.minPlayers)
+            return {
+                success: false,
+                gameId: this.id,
+                title: "Not enough players",
+                message: "This room has been closed",
+                icon: "error",
+            };
 
         this.status = "started";
         this.canJoin = false;
 
         this.sendGameData({ game: true, players: true });
         this.sendMessage({ text: "Game started", type: "alert", color: "info" });
-        this.sendPlayerList();
 
-        this.question().then(() => {
-            this.sendMessage({ text: "Time's up!", type: "alert", color: "warning" });
-        });
+        // await this.newRound(10);
+        // await this.newRound(10);
+
+        while (true) {
+            if (this.round == 0) {
+                const vote = await this.vote(10);
+            } else {
+                const round = await this.newRound(10);
+                if (round.success === false) break;
+            }
+        }
+
+        return {
+            success: false,
+            gameId: this.id,
+            title: "Game finished",
+            message: "This room has been closed",
+            icon: "warning",
+        };
+
+        // this.sendMessage({ text: "Game finished", type: "alert", color: "info" });
 
         return { success: true };
     }
