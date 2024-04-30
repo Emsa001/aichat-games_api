@@ -58,7 +58,6 @@ class GameManager {
         delete this.games[game.id];
         this.numGames--;
 
-        // console.log(this.games);
     }
 
     getAllGames() {
@@ -107,6 +106,7 @@ io.on("connection", (socket) => {
         const timeUntilStart = game.startTime - currentTime;
         if (timeUntilStart > 0) {
             setTimeout(async () => {
+                if(game.status != "waiting") return;
                 const gameStart = await game.start(gameManager);
                 gameManager.deleteGame(gameStart);
                 update();
@@ -126,15 +126,22 @@ io.on("connection", (socket) => {
             console.log(`Player ${socket.id} joined game ${game.id}`)
 
 			update();
-            // if (response.success != true) return io.to(socket.id).emit("error", { text: response.text });
-
-            // const { game } = response;
-
-            // socket.join(game.id);
-            // io.to(game.id).emit("joined", { gameId: game.id, playerId: socket.id });
         } catch (error) {
 			console.log(error)
-            // socket.emit("error", { message: error.message });
+        }
+    });
+
+    socket.on("startGame", async (data) => {
+        try {
+            const game = gameManager.getGame(data.gameId);
+            if (!game) return;
+
+            const response = await game.start(gameManager);
+            gameManager.deleteGame(response);
+
+            update();
+        } catch (error) {
+            console.error(error);
         }
     });
 
@@ -163,48 +170,14 @@ io.on("connection", (socket) => {
 
     socket.on("disconnect", () => {
 		try {
-			// Clean up resources associated with the socket
 			gameManager.leaveGame(socket);
 			socket.removeAllListeners();
 			
 			update();
-			// Remove any references to the socket
-			// For example, if socket references are stored in a data structure, remove them here
 		} catch (err) {
 			console.error(err);
 		}
 	});
-	
-	socket.on("disconnecting", () => {
-		console.log(socket.rooms); // the Set contains at least the socket ID
-	});
-});
-
-app.post("/checkRoom", async (req, res) => {
-    // const { roomId } = req.body;
-    // const format = /[ `@#$%^&*()+\-=\[\]{};':"\\|,.\/?~]/;
-
-    // if (format.test(roomId)) {
-    //     return res.json({ error: "RoomId contains illegal characters" });
-    // }
-
-    // // if (roomId.length < 5 || roomId.length > 20) {
-    // //     return res.json({ error: "RoomId must be at least 5 characters and maximum 20 characters length" });
-    // // }
-
-    // const game = await Games.findOne({ where: { roomId } });
-
-    // if(game && game.round > 0){
-    // 	return res.json({ error: "The game has already started" });
-    // }
-
-    // const users = await Users.findAll({ where: { roomId } });
-
-    // if (game && users.length > 10) {
-    //     return res.json({ error: "The room is full :(" });
-    // }
-
-    return res.json({ success: true });
 });
 
 const PORT = 5555;

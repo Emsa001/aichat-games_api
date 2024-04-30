@@ -1,6 +1,8 @@
 const { generateUsername } = require("unique-username-generator");
-const { generateAiResponse, initModel } = require("./ai");
 const { getRandomQuestion } = require("./questions");
+const sendData = require("./functions/sendData");
+const create = require("./functions/create");
+const aiManager = require("./functions/ai");
 
 const generateId = () => {
     return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
@@ -29,7 +31,6 @@ class Game {
         // Game information
         this.io = io;
         this.id = generateId();
-        this.model = initModel();
         this.name = "Guess Who's AI";
         this.description =
             "Chat of minimum 3 players. One player is the AI, the others are humans. All players including AI will answer the same question. Humans must guess who the AI is. AI must try to blend in.";
@@ -51,7 +52,7 @@ class Game {
 
         // Game timing
         const futureDate = new Date();
-        const timeToStart = 15;
+        const timeToStart = 60;
         this.startTime = futureDate.setSeconds(futureDate.getSeconds() + timeToStart);
     }
 
@@ -91,33 +92,10 @@ class Game {
         return this.players.find((player) => player.id === id);
     }
 
-    sendGameData({ game, players }) {
-        const data = {};
-
-        if (game) data.game = this.formatData();
-        if (players) data.players = this.players;
-
-        this.io.to(this.id).emit("data", data);
-    }
-
     async create(){
-        this.addAI();
-        generateAiResponse(this.model, "write a single word: Hi").then((response) => {
-            console.log(`AI test response: ${response}`);
-        });
+        create.room(this);
     }
-
-    async generateAiMessage(ai, text) {
-        const message = await generateAiResponse(this.model, text);
-
-        const delay = Math.random() * (100 - 40) + 40;
-        setTimeout(() => {
-            this.sendMessage({ text: message, username: ai.name, type: "message", color: undefined });
-            ai.canWrite = false;
-        }, delay * 100);
-    }
-    
-
+   
     recieveMessage(socket, text) {
         const player = this.getPlayer(socket.id);
         if (!player || !player.canWrite) return { success: false, text: "Not your turn" };
@@ -140,7 +118,7 @@ class Game {
 
         this.players.push(AI);
         this.ai.push(AI);
-        this.sendGameData({ game: true });
+        sendData.room({ game: true }, this);
         return { success: true };
     }
 
@@ -149,6 +127,7 @@ class Game {
 
         const player = new Player(socket.id);
         if (this.players.includes(player)) return { success: false, text: "Already Joined" };
+        if(this.players.length == 1) player.admin = true;
 
         this.players.push(player);
 
@@ -157,7 +136,7 @@ class Game {
         socket.player = player;
         this.io.to(socket.id).emit("data", { user: player });
         setTimeout(() => {
-            this.sendGameData({ game: true });
+            sendData.room({ game: true }, this);
         }, 100);
 
         return { game: this, success: true };
@@ -171,7 +150,7 @@ class Game {
 
         user.canWrite = false;
         this.io.to(user.id).emit("data", { user: user });
-        this.sendGameData({ game: true, players: true });
+        sendData.room({ game: true, players: true }, this);
 
         return { success: true };
     }
@@ -186,10 +165,10 @@ class Game {
                 this.sendUserData(player);
             });
 
-            this.sendGameData({ game: true });
+            sendData.room({ game: true}, this);
 
             this.ai.forEach(async (ai) => {
-                this.generateAiMessage(ai, text);
+                aiManager.send({ ai, text }, this);
             });
 
             setTimeout(() => {
@@ -214,7 +193,7 @@ class Game {
                     if (player.canWrite) {
                         this.sendMessage({ text: `${player.name} did not answer`, type: "info", color: "error" });
                         this.removePlayer(player.id);
-                        this.sendGameData({ game: true, players: true });
+                        sendData.room({ game: true, players: true}, this);
                     }
                 });
 
@@ -233,7 +212,8 @@ class Game {
 
             this.sendTimer(time);
             this.sendMessage({ text: `Vote time`, type: "alert", color: "info" });
-            this.sendGameData({ game: true });
+            sendData.room({ game: true }, this);
+
 
             setTimeout(() => {
                 this.canVote = false;
@@ -296,7 +276,7 @@ class Game {
         this.status = "started";
         this.canJoin = false;
 
-        this.sendGameData({ game: true, players: true });
+        sendData.room({ game: true, players: true}, this);
         this.sendMessage({ text: "Game started", type: "alert", color: "info" });
 
         while (true) {
