@@ -1,3 +1,5 @@
+const { generateUsername } = require("unique-username-generator");
+
 class Player {
     constructor(id) {
         this.id = id;

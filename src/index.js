@@ -4,6 +4,7 @@ const cors = require("cors");
 const bodyParser = require("body-parser");
 
 const { init: initSocket, getIO } = require("./utils/sockets");
+const { generativeModel } = require("./utils/aimodel");
 
 const app = express();
 app.use(cors());
@@ -41,8 +42,7 @@ class GameManager {
 
         return game;
     }
-
-
+    
     leaveGame(socket) {
         const game = this.getGame(socket.gameId);
         if (!game) return { success: false, text: "Game not found" };
@@ -145,17 +145,17 @@ io.on("connection", (socket) => {
         }
     });
 
-    socket.on("message", (data) => {
-        try{
-            const game = gameManager.getGame(data.gameId);
-            if (!game) return;
+    // socket.on("message", (data) => {
+    //     try{
+    //         const game = gameManager.getGame(data.gameId);
+    //         if (!game) return;
 
     
-            const response = game.recieveMessage(socket, data.text);
-        }catch(err){
-            console.error(err);
-        }
-    });
+    //         const response = game.recieveMessage(socket, data.text);
+    //     }catch(err){
+    //         console.error(err);
+    //     }
+    // });
 
     socket.on("vote", (data) => {
         try{
@@ -184,6 +184,11 @@ const PORT = 5555;
 server.listen(PORT, async () => {
     try {
         console.log(`Server is running on port ${PORT}`);
+
+        const request = {
+            contents: [{role: 'user', parts: [{text: `say hi`}]}],
+        };
+        generativeModel.generateContent(request).then(() => console.log("Model loaded"));
         // await sequelize.sync({ force: true });
         // console.log("Database synchronized");
     } catch (error) {
