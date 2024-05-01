@@ -38,7 +38,8 @@ class GameManager {
         const game = this.getGame(gameId);
 
         if (!game) throw new Error(`Game ${gameId} does not exist.`);
-        game.addPlayer(socket);
+        const response = game.addPlayer(socket);
+        if(response.success === false) return response;
 
         return game;
     }
@@ -85,7 +86,6 @@ const update = () => {
 }
 
 io.on("connection", (socket) => {
-
 	socket.on("join", async (data) => {
 		socket.join("lobby");
 		socket.lobby = true;
@@ -100,8 +100,8 @@ io.on("connection", (socket) => {
 		}
 
 		const game = await gameManager.createGame(data.name);
+        
         update();
-
         const currentTime = new Date().getTime();
         const timeUntilStart = game.startTime - currentTime;
         if (timeUntilStart > 0) {
@@ -119,6 +119,7 @@ io.on("connection", (socket) => {
 			socket.isUser = true;
 			socket.lobby = false;
             const game = gameManager.joinGame(data.id, socket);
+            if(!game || game.success === false) return false; 
 
             socket.join(game.id);
             socket.gameId = game.id;
@@ -145,39 +146,20 @@ io.on("connection", (socket) => {
         }
     });
 
-    // socket.on("message", (data) => {
-    //     try{
-    //         const game = gameManager.getGame(data.gameId);
-    //         if (!game) return;
-
-    
-    //         const response = game.recieveMessage(socket, data.text);
-    //     }catch(err){
-    //         console.error(err);
-    //     }
-    // });
-
-    socket.on("vote", (data) => {
-        try{
-            const game = gameManager.getGame(data.gameId);
-            if (!game) return;
-
-            const response = game.recieveVote(socket, data.vote);
-        }catch(err){
+    socket.on("disconnect", () => {
+        try {
+            const game = gameManager.leaveGame(socket);
+            if (game) {
+                socket.leave(game.id);
+                socket.removeAllListeners("message");
+                socket.removeAllListeners("vote");
+                // Add more removeAllListeners calls if there are other events
+            }
+            update();
+        } catch (err) {
             console.error(err);
         }
     });
-
-    socket.on("disconnect", () => {
-		try {
-			gameManager.leaveGame(socket);
-			socket.removeAllListeners();
-			
-			update();
-		} catch (err) {
-			console.error(err);
-		}
-	});
 });
 
 const PORT = 5555;

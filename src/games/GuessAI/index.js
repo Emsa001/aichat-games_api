@@ -6,7 +6,7 @@ const player = require("./functions/player");
 const roundModule = require("./functions/round");
 
 class Game {
-    constructor(io) {
+    constructor(io, socket) {
         // Game information
         this.io = io;
         this.id = player.generateId();
@@ -20,7 +20,7 @@ class Game {
         this.ai = [];
         this.minPlayers = 3;
         this.maxPlayers = 10;
-        this.voteTime = 5;
+        this.voteTime = 20;
         this.roundTime = 30;
 
         // Game status
@@ -31,29 +31,38 @@ class Game {
 
         // Game timing
         const futureDate = new Date();
-        const timeToStart = 60;
+        const timeToStart = 300;
         this.startTime = futureDate.setSeconds(futureDate.getSeconds() + timeToStart);
     }
 
-    listen(socket){
+    listen(socket) {
+        console.log('listen')
         socket.on("message", (data) => {
-            try{  
+            try {
                 this.recieveMessage(socket, data.text);
+            } catch (err) {
+                console.error(err);
+            }
+        });
+
+        socket.on("vote", (data) => {
+            try{       
+                this.recieveVote(socket, data.vote);
             }catch(err){
                 console.error(err);
             }
         });
     }
 
-    create(){
+    create() {
         create.constructor(this);
         create.room();
     }
 
     recieveMessage(socket, text) {
-        return message.recieve({socket, text}, this);
+        return message.recieve({ socket, text }, this);
     }
-    
+
     recieveVote(socket, vote) {
         if (!this.canVote) return { success: false, text: "Not voting time" };
         socket.player.vote = vote;
@@ -61,10 +70,13 @@ class Game {
     }
 
     addAI() {
+        if(this.canJoin === false) return { success: false, text: "Game has already started" };
         return aiManager.addAI(this);
     }
 
     addPlayer(socket) {
+        if(this.canJoin === false) return { success: false, text: "Game has already started" };
+        this.listen(socket);
         return player.add({ socket }, this);
     }
 
@@ -73,8 +85,8 @@ class Game {
     }
 
     async start() {
-        if (this.players.length < this.minPlayers){
-            console.log("Not enough players")
+        if (this.players.length < this.minPlayers) {
+            console.log("Not enough players");
             return {
                 success: false,
                 gameId: this.id,
@@ -87,16 +99,15 @@ class Game {
         this.status = "started";
         this.canJoin = false;
 
-        data.sendRoom({ game: true, players: true}, this);
+        data.sendRoom({ game: true, players: true }, this);
         message.sendRoom({ text: "Game started", type: "alert", color: "info" }, this);
 
         while (true) {
             roundModule.constructor(this);
 
-            if(this.players.length < this.minPlayers)
-            {
-                const ai = this.players.find(player => player.isAI);
-                return resolve( {
+            if (this.players.length < this.minPlayers) {
+                const ai = this.players.find((player) => player.isAI);
+                return resolve({
                     victory: false,
                     gameId: this.id,
                     title: "You lost",
@@ -107,13 +118,12 @@ class Game {
 
             if (this.round > 0 && this.round % 3 === 0) {
                 const vote = await roundModule.vote(this.voteTime);
-                if(vote?.victory === true || vote?.victory === false)
-                    return vote;
+                if (vote?.victory === true || vote?.victory === false) return vote;
             }
             const response = await roundModule.new(this.roundTime);
             if (response.success === false) break;
 
-            if(this.ai.length == 0){
+            if (this.ai.length == 0) {
                 return {
                     gameId: this.id,
                     title: "Victory!",

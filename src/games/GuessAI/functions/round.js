@@ -105,8 +105,7 @@ module.exports = {
                         return resolve();
                     }
     
-                    message.sendRoom({ text: `${toKick.name} was voted to be kicked`, type: "alert", color: "error" },game);
-    
+                    
                     if(toKick.isAI){
                         return resolve({
                             victory: true,
@@ -116,7 +115,8 @@ module.exports = {
                             icon: "success",
                         });
                     }
-    
+                    
+                    message.sendRoom({ text: `${toKick.name} was not the AI`, type: "alert", color: "error" },game);
                     game.removePlayer(toKick.id);
     
                     if(game.players.length < game.minPlayers)
